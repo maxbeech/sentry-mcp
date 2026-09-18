@@ -1,0 +1,14 @@
+{
+  "extends": "@sentry/mcp-server-tsconfig/tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
+    "outDir": "dist",
+    "rootDir": ".",
+    // An application, not a library nothing else imports -- no declaration
+    // output needed, which sidesteps having to name express's own inferred
+    // (and not portably nameable) Application type on every export.
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src", "api"]
+}

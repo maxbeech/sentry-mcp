@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "installCommand": "pnpm install --filter=@sentry/mcp-vercel... --frozen-lockfile",
+  "buildCommand": "pnpm --filter @sentry/mcp-core run build",
+  "builds": [
+    { "src": "packages/mcp-vercel/api/index.ts", "use": "@vercel/node" }
+  ],
+  "routes": [{ "src": "/(.*)", "dest": "/packages/mcp-vercel/api/index.ts" }]
+}
