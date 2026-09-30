@@ -18,20 +18,9 @@ This is upstreamed as **[getsentry/sentry-mcp#1319](https://github.com/getsentry
 
 `packages/mcp-vercel/` — a new workspace package, **not** part of upstream. A thin, stateless Express server (deployed on Vercel, same shape as this account's other MCP servers — Apollo-MCP, Google-Analytics-MCP) that wraps `@sentry/mcp-core`'s own `buildServer()` in `@modelcontextprotocol/sdk`'s `StreamableHTTPServerTransport` (stateless mode). No Cloudflare dependency at all, since `mcp-core` itself has none — deliberately avoids standing up Sentry's OAuth provider, KV namespaces, or rate-limiter bindings, none of which this single-purpose deployment needs. Auth is a raw Sentry token passed straight through as `Authorization: Bearer <token>`; this server never stores, validates, or refreshes it.
 
-Deployed at `https://mcp-vercel-azure.vercel.app/mcp` (the production alias of the Vercel project `mcp-vercel` under this account). It is moving to Helm7: the hostname Helm7 will serve is `https://sentry.mcp.openhelm.ai/mcp`. That is planned and not yet live. `mcp-vercel-azure.vercel.app` stays up until callers have moved (see "Running on Helm7").
+Deployed at `https://mcp-vercel-azure.vercel.app/mcp` (the production alias of the Vercel project `mcp-vercel` under this account).
 
 Wired into Contextely as the `sentry_selfhosted` connector preset (`src/lib/connectors/presets.ts`), marked `internalOnly` so it never appears in the public picker or `/integrations` page for real customers.
-
-## Running on Helm7
-
-The same server also runs as a long-lived container on Helm7, from the `helm7` branch.
-
-- **Image:** `packages/mcp-vercel/Dockerfile`, with `packages/mcp-vercel/Dockerfile.dockerignore` beside it. It installs only what `@sentry/mcp-vercel` depends on (`pnpm install --filter=@sentry/mcp-vercel... --frozen-lockfile`, the same as `vercel.json`), builds `mcp-core`, compiles `mcp-vercel` with `tsc`, and ships a `pnpm deploy --prod` copy on `node:22-alpine` as the non-root `node` user. pnpm is pinned through corepack to the root `packageManager` version; `src/dockerfile.test.ts` fails if the two drift or a `COPY` names something that is missing or ignored.
-- **Service settings:** repo `maxbeech/sentry-mcp`, branch `helm7`, `root_directory` = `packages/mcp-vercel`. Helm7 then builds `packages/mcp-vercel/Dockerfile` with the whole clone as context. The Dockerfile is here, not at the repository root, so upstream merges never conflict with a root one.
-- **Start:** `node dist/start.js` (`src/start.ts`). It binds `0.0.0.0` on `PORT` (Helm7 sets 3000; 3000 if unset; a malformed `PORT` is an error), answers `GET /` with 200 for the health check, and shuts down on SIGTERM.
-- **Environment:** none required. `SENTRY_HOST` is optional and defaults to `sentry.io`. The Sentry token is still supplied per request as `Authorization: Bearer`, never configured on the service.
-- **Client IP:** the server has no per-IP logic and no `trust proxy`, so the `X-Helm7-Client-Ip` header is not read.
-- **Vercel:** `vercel.json` and `api/index.ts` are left in place so upstream merges stay clean. The Vercel project is frozen at its current deployment as a legacy alias until it is deleted; nothing on the Helm7 path depends on it.
 
 ## Writing to Sentry (2026-09-30)
 
@@ -50,27 +39,6 @@ Two changes here make that failure usable:
 - A refused write now says which scope it needed. Sentry's 403 names none, so an agent could not tell "this token cannot write" from "you cannot see this project". `annotateMissingScopes` (`internal/error-handling.ts`) attaches the tool's own write scopes to the `ApiPermissionError` at the tool boundary, in both the direct path and `execute_sentry_tool`, and the formatter prints them with the two remedies (new token with that scope, or sign in again with the skill). Reads are deliberately left alone: a 403 on a read almost always means project access, which a wider token would not fix.
 
 Files: `packages/mcp-core/src/{api-client/errors.ts,internal/error-handling.ts,server.ts,tools/surfaces.ts,tools/special/execute-tool.ts}` (plus tests), and in `packages/mcp-vercel`, `src/skills.ts` and `src/index.ts`. The wrapper now has its own tests (`pnpm --filter @sentry/mcp-vercel test`), which start the app on a real port and list tools without calling Sentry.
-
-## Sign in with Sentry instead of pasting a token (2026-09-30)
-
-`/mcp` accepts two kinds of bearer. A raw Sentry auth token works exactly as before. If a Sentry OAuth application is configured, the server is also an MCP authorization server, so a client such as Contextely can discover it from a 401, register itself, send the person to Sentry's own consent screen and be handed tokens, with nothing pasted. Signing in this way requests `org:read project:write team:write event:write` (the hosted server's set), so **a signed-in connection can resolve issues and leave notes with no skill to tick**; `?skills=` narrows it.
-
-**It is off until configured, and says so.** With none of the three variables set the server behaves as it always did. With some, `/authorize`, `/token` and `/register` answer 503 naming what is missing, and `/health` reports `oauth.state` (`off`, `incomplete`, `on`). It never half-works.
-
-One-time setup, which only the Sentry account owner can do:
-
-1. In Sentry, create an OAuth application (User settings, API, Applications). Set its **Authorized Redirect URI** to `https://mcp-vercel-azure.vercel.app/oauth/sentry/callback`. Sentry shows a client id and client secret.
-2. On the Vercel project `mcp-vercel` set `SENTRY_CLIENT_ID` and `SENTRY_CLIENT_SECRET` (production). `OAUTH_STATE_SECRET` (32+ characters, seals every token) must also be set; `OAUTH_BASE_URL` only if the address is not the alias above.
-3. Redeploy. `/health` should now say `"oauth":{"state":"on"}`.
-
-How it works, in `packages/mcp-vercel/src/oauth/`:
-
-- **Nothing is stored.** A Vercel function keeps nothing between calls and there is no database, so a registered client, an authorization code, an access token and a refresh token are each an AES-256-GCM blob that carries its own record and expiry (`seal.ts`). They are encrypted rather than merely signed because they carry Sentry's own tokens and a code passes through a browser address bar. The kind is authenticated data, so a code cannot be used as an access token. A code is not single-use (a stateless server cannot record that it was spent); it lives ten minutes and is useless without the PKCE verifier.
-- **Sentry's tokens last about thirty days and both halves rotate on refresh.** The hosted server just asks for a new sign-in after that. This one refreshes upstream and returns the new pair to the caller, so a used refresh token is dead at Sentry and here. A refresh Sentry rejects becomes `invalid_grant`, which tells the client to sign in again.
-- `provider.ts` is the SDK's `OAuthServerProvider`; `sentry-upstream.ts` is the two calls to Sentry; `config.ts` decides `off`/`incomplete`/`on`.
-- `oauth.test.ts` runs the whole flow against a faked Sentry: metadata, register, authorize, callback, PKCE exchange, use on `/mcp` (asserting Sentry sees the unwrapped token), refresh rotation and reuse, tampered, foreign-kind, expired and cross-client tokens, and the not-fully-configured states.
-
-What this does NOT change: the hosted `mcp.sentry.dev` keeps its own consent screen and its untick-by-default Triage skill. This is only the fork.
 
 ## Keeping this in sync with upstream
 
