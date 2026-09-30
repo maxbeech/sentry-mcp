@@ -35,8 +35,12 @@ COPY packages/mcp-server-mocks ./packages/mcp-server-mocks
 COPY packages/mcp-core ./packages/mcp-core
 COPY packages/mcp-vercel ./packages/mcp-vercel
 
-# Same install and build steps as vercel.json, so both hosts run the same code.
-RUN pnpm install --filter=@sentry/mcp-vercel... --frozen-lockfile
+# Same install and build steps as vercel.json, so both hosts run the same code,
+# with one difference: --ignore-scripts. @ast-grep/cli (a dev-only linter that
+# arrives through mcp-core) fails its postinstall on Alpine because it ships no
+# musl binary, which fails the whole install. Nothing this image builds or runs
+# needs a postinstall (esbuild resolves its binary without one).
+RUN pnpm install --filter=@sentry/mcp-vercel... --frozen-lockfile --ignore-scripts
 RUN pnpm --filter @sentry/mcp-core run build
 RUN pnpm --filter @sentry/mcp-vercel run build
 

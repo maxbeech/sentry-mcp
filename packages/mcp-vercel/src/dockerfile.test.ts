@@ -129,6 +129,12 @@ describe("packages/mcp-vercel/Dockerfile", () => {
     );
   });
 
+  it("skips install scripts, because @ast-grep/cli's postinstall fails on Alpine", () => {
+    // Found by building the image: it ships no musl binary, and its failure
+    // fails the whole install even though nothing in the image uses it.
+    expect(dockerfile).toMatch(/pnpm install [^\n]*--ignore-scripts/);
+  });
+
   it("runs as a non-root user on the port Helm7 sets, in exec form", () => {
     const lines = instructions();
     const runtime = lines.slice(
