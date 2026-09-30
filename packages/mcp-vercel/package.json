@@ -6,6 +6,8 @@
   "description": "Stateless Vercel deployment of @sentry/mcp-core (patched find_projects/find_organizations pagination)",
   "scripts": {
     "dev": "tsx watch src/dev-server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/start.js",
     "pretest": "pnpm --filter @sentry/mcp-core run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
