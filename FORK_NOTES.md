@@ -40,6 +40,27 @@ Two changes here make that failure usable:
 
 Files: `packages/mcp-core/src/{api-client/errors.ts,internal/error-handling.ts,server.ts,tools/surfaces.ts,tools/special/execute-tool.ts}` (plus tests), and in `packages/mcp-vercel`, `src/skills.ts` and `src/index.ts`. The wrapper now has its own tests (`pnpm --filter @sentry/mcp-vercel test`), which start the app on a real port and list tools without calling Sentry.
 
+## Sign in with Sentry instead of pasting a token (2026-09-30)
+
+`/mcp` accepts two kinds of bearer. A raw Sentry auth token works exactly as before. If a Sentry OAuth application is configured, the server is also an MCP authorization server, so a client such as Contextely can discover it from a 401, register itself, send the person to Sentry's own consent screen and be handed tokens, with nothing pasted. Signing in this way requests `org:read project:write team:write event:write` (the hosted server's set), so **a signed-in connection can resolve issues and leave notes with no skill to tick**; `?skills=` narrows it.
+
+**It is off until configured, and says so.** With none of the three variables set the server behaves as it always did. With some, `/authorize`, `/token` and `/register` answer 503 naming what is missing, and `/health` reports `oauth.state` (`off`, `incomplete`, `on`). It never half-works.
+
+One-time setup, which only the Sentry account owner can do:
+
+1. In Sentry, create an OAuth application (User settings, API, Applications). Set its **Authorized Redirect URI** to `https://mcp-vercel-azure.vercel.app/oauth/sentry/callback`. Sentry shows a client id and client secret.
+2. On the Vercel project `mcp-vercel` set `SENTRY_CLIENT_ID` and `SENTRY_CLIENT_SECRET` (production). `OAUTH_STATE_SECRET` (32+ characters, seals every token) must also be set; `OAUTH_BASE_URL` only if the address is not the alias above.
+3. Redeploy. `/health` should now say `"oauth":{"state":"on"}`.
+
+How it works, in `packages/mcp-vercel/src/oauth/`:
+
+- **Nothing is stored.** A Vercel function keeps nothing between calls and there is no database, so a registered client, an authorization code, an access token and a refresh token are each an AES-256-GCM blob that carries its own record and expiry (`seal.ts`). They are encrypted rather than merely signed because they carry Sentry's own tokens and a code passes through a browser address bar. The kind is authenticated data, so a code cannot be used as an access token. A code is not single-use (a stateless server cannot record that it was spent); it lives ten minutes and is useless without the PKCE verifier.
+- **Sentry's tokens last about thirty days and both halves rotate on refresh.** The hosted server just asks for a new sign-in after that. This one refreshes upstream and returns the new pair to the caller, so a used refresh token is dead at Sentry and here. A refresh Sentry rejects becomes `invalid_grant`, which tells the client to sign in again.
+- `provider.ts` is the SDK's `OAuthServerProvider`; `sentry-upstream.ts` is the two calls to Sentry; `config.ts` decides `off`/`incomplete`/`on`.
+- `oauth.test.ts` runs the whole flow against a faked Sentry: metadata, register, authorize, callback, PKCE exchange, use on `/mcp` (asserting Sentry sees the unwrapped token), refresh rotation and reuse, tampered, foreign-kind, expired and cross-client tokens, and the not-fully-configured states.
+
+What this does NOT change: the hosted `mcp.sentry.dev` keeps its own consent screen and its untick-by-default Triage skill. This is only the fork.
+
 ## Keeping this in sync with upstream
 
 ```bash
