@@ -18,9 +18,20 @@ This is upstreamed as **[getsentry/sentry-mcp#1319](https://github.com/getsentry
 
 `packages/mcp-vercel/` — a new workspace package, **not** part of upstream. A thin, stateless Express server (deployed on Vercel, same shape as this account's other MCP servers — Apollo-MCP, Google-Analytics-MCP) that wraps `@sentry/mcp-core`'s own `buildServer()` in `@modelcontextprotocol/sdk`'s `StreamableHTTPServerTransport` (stateless mode). No Cloudflare dependency at all, since `mcp-core` itself has none — deliberately avoids standing up Sentry's OAuth provider, KV namespaces, or rate-limiter bindings, none of which this single-purpose deployment needs. Auth is a raw Sentry token passed straight through as `Authorization: Bearer <token>`; this server never stores, validates, or refreshes it.
 
-Deployed at `https://mcp-vercel-azure.vercel.app/mcp` (the production alias of the Vercel project `mcp-vercel` under this account).
+Deployed at `https://mcp-vercel-azure.vercel.app/mcp` (the production alias of the Vercel project `mcp-vercel` under this account). It is moving to Helm7: the hostname Helm7 will serve is `https://sentry.mcp.openhelm.ai/mcp`. That is planned and not yet live. `mcp-vercel-azure.vercel.app` stays up until callers have moved (see "Running on Helm7").
 
 Wired into Contextely as the `sentry_selfhosted` connector preset (`src/lib/connectors/presets.ts`), marked `internalOnly` so it never appears in the public picker or `/integrations` page for real customers.
+
+## Running on Helm7
+
+The same server also runs as a long-lived container on Helm7, from the `helm7` branch.
+
+- **Image:** `packages/mcp-vercel/Dockerfile`, with `packages/mcp-vercel/Dockerfile.dockerignore` beside it. It installs only what `@sentry/mcp-vercel` depends on (`pnpm install --filter=@sentry/mcp-vercel... --frozen-lockfile`, the same as `vercel.json`), builds `mcp-core`, compiles `mcp-vercel` with `tsc`, and ships a `pnpm deploy --prod` copy on `node:22-alpine` as the non-root `node` user. pnpm is pinned through corepack to the root `packageManager` version; `src/dockerfile.test.ts` fails if the two drift or a `COPY` names something that is missing or ignored.
+- **Service settings:** repo `maxbeech/sentry-mcp`, branch `helm7`, `root_directory` = `packages/mcp-vercel`. Helm7 then builds `packages/mcp-vercel/Dockerfile` with the whole clone as context. The Dockerfile is here, not at the repository root, so upstream merges never conflict with a root one.
+- **Start:** `node dist/start.js` (`src/start.ts`). It binds `0.0.0.0` on `PORT` (Helm7 sets 3000; 3000 if unset; a malformed `PORT` is an error), answers `GET /` with 200 for the health check, and shuts down on SIGTERM.
+- **Environment:** none required. `SENTRY_HOST` is optional and defaults to `sentry.io`. The Sentry token is still supplied per request as `Authorization: Bearer`, never configured on the service.
+- **Client IP:** the server has no per-IP logic and no `trust proxy`, so the `X-Helm7-Client-Ip` header is not read.
+- **Vercel:** `vercel.json` and `api/index.ts` are left in place so upstream merges stay clean. The Vercel project is frozen at its current deployment as a legacy alias until it is deleted; nothing on the Helm7 path depends on it.
 
 ## Writing to Sentry (2026-09-30)
 
