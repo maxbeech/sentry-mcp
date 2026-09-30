@@ -6,6 +6,7 @@ import { mswServer } from "@sentry/mcp-server-mocks";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { ApiPermissionError } from "./api-client";
 import { UserInputError } from "./errors";
 import { structuredResult } from "./internal/tool-helpers/results";
 import { buildServer } from "./server";
@@ -109,6 +110,7 @@ async function callRegisteredTool(
 }
 
 const DEFAULT_DIRECT_TOOL_NAMES = [
+  "add_issue_note",
   "analyze_issue_with_seer",
   "execute_sentry_tool",
   "find_organizations",
@@ -203,6 +205,72 @@ describe("buildServer", () => {
 
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0][0]).toBeInstanceOf(UserInputError);
+    });
+  });
+
+  describe("a refused write names the scope it needed", () => {
+    const forbidden = () => {
+      throw new ApiPermissionError(
+        "You do not have permission to perform this action.",
+      );
+    };
+    const textOf = (result: unknown) =>
+      getTextContent(result as Parameters<typeof getTextContent>[0]);
+
+    it("says which scope a forbidden write needs, called directly", async () => {
+      const server = buildServer({
+        context: baseContext,
+        tools: {
+          write_tool: createMockTool("write_tool", {
+            requiredScopes: ["event:write"],
+            handler: async () => forbidden(),
+          }),
+        },
+      });
+
+      const result = await callRegisteredTool(server, "write_tool", {});
+
+      expect(result.isError).toBe(true);
+      const text = textOf(result);
+      expect(text).toContain("Permission Missing");
+      expect(text).toContain("event:write");
+      expect(text).toContain("Triage Issues");
+    });
+
+    it("says it through execute_sentry_tool too, where the wrapper has no scopes of its own", async () => {
+      const registry: Record<string, ToolConfig> = {
+        write_tool: createMockTool("write_tool", {
+          requiredScopes: ["event:write"],
+          handler: async () => forbidden(),
+        }),
+      };
+      registry.execute_sentry_tool = createExecuteTool(() => registry);
+      const server = buildServer({ context: baseContext, tools: registry });
+
+      const result = await callRegisteredTool(server, "execute_sentry_tool", {
+        name: "write_tool",
+        arguments: {},
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("event:write");
+    });
+
+    it("does not blame a scope for a forbidden READ", async () => {
+      const server = buildServer({
+        context: baseContext,
+        tools: {
+          read_tool: createMockTool("read_tool", {
+            requiredScopes: ["event:read"],
+            handler: async () => forbidden(),
+          }),
+        },
+      });
+
+      const result = await callRegisteredTool(server, "read_tool", {});
+
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).not.toContain("Permission Missing");
     });
   });
 
@@ -759,6 +827,28 @@ describe("buildServer", () => {
       expect(toolNames).not.toContain("get_issue_details");
       expect(toolNames).not.toContain("get_trace_details");
       expect(toolNames).not.toContain("get_profile");
+    });
+
+    it("offers the issue write tools only when the triage skill is granted", async () => {
+      const withoutTriage = buildServer({
+        context: {
+          ...baseContext,
+          grantedSkills: new Set(["inspect", "seer"]),
+        },
+      });
+      const withoutNames = getRegisteredToolNames(withoutTriage);
+      expect(withoutNames).not.toContain("update_issue");
+      expect(withoutNames).not.toContain("add_issue_note");
+
+      const withTriage = buildServer({
+        context: {
+          ...baseContext,
+          grantedSkills: new Set(["inspect", "triage"]),
+        },
+      });
+      const withNames = getRegisteredToolNames(withTriage);
+      expect(withNames).toContain("update_issue");
+      expect(withNames).toContain("add_issue_note");
     });
 
     it("keeps docs tools catalog-only and executable under inspect and legacy docs grants", async () => {

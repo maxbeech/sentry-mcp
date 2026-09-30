@@ -1,11 +1,12 @@
 import { type Span, type SpanAttributeValue, startSpan } from "@sentry/core";
 import { z } from "zod";
-import { defineTool } from "../../internal/tool-helpers/define";
+import { UserInputError } from "../../errors";
 import {
+  annotateMissingScopes,
   isExpectedToolError,
   recordToolFailure,
 } from "../../internal/error-handling";
-import { UserInputError } from "../../errors";
+import { defineTool } from "../../internal/tool-helpers/define";
 import { ALL_SKILLS } from "../../skills";
 import type { ServerContext } from "../../types";
 import {
@@ -70,6 +71,9 @@ async function executeCatalogToolWithSpan({
         if (!isExpectedToolError(error)) {
           span.recordException(error);
         }
+        // The wrapper's own scopes are empty, so the target tool is the only
+        // place that can say what a refused write needed.
+        annotateMissingScopes(error, tool.requiredScopes);
         recordToolFailure(tool, error, params, context);
         throw error;
       }

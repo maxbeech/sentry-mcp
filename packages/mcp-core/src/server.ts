@@ -31,6 +31,7 @@ import { wrapMcpServerWithSentry } from "@sentry/core/server";
 import { isApiAuthenticationErrorDeep } from "./api-client";
 import { MCP_SERVER_NAME } from "./constants";
 import {
+  annotateMissingScopes,
   formatErrorForUser,
   isExpectedToolError,
   recordToolFailure,
@@ -403,6 +404,10 @@ function configureServer({
             await context.onUpstreamUnauthorized();
           } catch {}
         }
+
+        // A forbidden write says which scope it needed (no-op for reads and
+        // for wrapper tools, whose own scopes are empty).
+        annotateMissingScopes(error, tool.requiredScopes);
 
         // Let the tool record its own failure telemetry (e.g. search_events
         // logs the failing query).

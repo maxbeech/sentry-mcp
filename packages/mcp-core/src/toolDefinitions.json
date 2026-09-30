@@ -41,7 +41,7 @@
     },
     "requiredScopes": ["event:write"],
     "skills": ["triage"],
-    "surface": "catalog"
+    "surface": "direct"
   },
   {
     "name": "add_team_to_project",

@@ -18,6 +18,13 @@ export const TOP_LEVEL_TOOL_NAMES = [
   "find_organizations",
   "find_projects",
   "update_issue",
+  // Fork addition. Closing the loop on a reported incident is two writes, a
+  // status change and a note saying what shipped, and both must be reachable
+  // as NAMED tools: a caller that only has `execute_sentry_tool` has to be
+  // given that generic executor, which can run every other write in the
+  // catalogue too (delete_uptime_monitor, create_project, ...). Named tools
+  // are what an operator can approve one by one.
+  "add_issue_note",
   "search_events",
   "analyze_issue_with_seer",
   "search_issues",

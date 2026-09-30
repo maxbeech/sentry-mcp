@@ -1,9 +1,9 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildServer } from "@sentry/mcp-core/server";
-import { ACTIVE_SKILLS } from "@sentry/mcp-core/skills";
 import type { ServerContext } from "@sentry/mcp-core/types";
 import cors from "cors";
 import express, { type Request, type Response } from "express";
+import { resolveGrantedSkills } from "./skills.js";
 
 /**
  * A thin, stateless HTTP wrapper around @sentry/mcp-core's own tool
@@ -68,15 +68,26 @@ app.post("/mcp", async (req: Request, res: Response) => {
     return;
   }
 
+  // The address says how much of this deployment the caller wants; see
+  // resolveGrantedSkills. The default is every active skill, including the
+  // write ones: what a write may actually do is decided by the Sentry token's
+  // own scopes, and a refused write now says which scope it needed.
+  const skills = resolveGrantedSkills(
+    new URL(req.originalUrl, "http://localhost").searchParams,
+  );
+  if (!skills.ok) {
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32602, message: skills.message },
+      id: null,
+    });
+    return;
+  }
+
   const context: ServerContext = {
     accessToken,
     sentryHost: process.env.SENTRY_HOST?.trim() || "sentry.io",
-    // Every tool this deployment exists to run (find_organizations,
-    // find_projects, search_issues, get_sentry_resource) is foundational or
-    // active by default -- see ACTIVE_SKILLS's own doc comment. Nothing here
-    // narrows access further, matching how mcp.sentry.dev's own direct
-    // Sentry-Bearer mode defaults when no ?skills= is given.
-    grantedSkills: new Set(ACTIVE_SKILLS),
+    grantedSkills: skills.grantedSkills,
     constraints: {},
     transport: "http",
   };

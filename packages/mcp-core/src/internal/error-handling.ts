@@ -1,17 +1,18 @@
+import { APICallError, NoObjectGeneratedError, RetryError } from "ai";
 import {
-  AgentExecutionError,
-  UserInputError,
-  ConfigurationError,
-  LLMProviderError,
-} from "../errors";
-import {
-  ApiError,
   ApiClientError,
+  ApiError,
+  ApiPermissionError,
   ApiServerError,
   isApiAuthenticationErrorDeep,
 } from "../api-client";
+import {
+  AgentExecutionError,
+  ConfigurationError,
+  LLMProviderError,
+  UserInputError,
+} from "../errors";
 import { logIssue, logWarn } from "../telem/logging";
-import { APICallError, NoObjectGeneratedError, RetryError } from "ai";
 import type { ToolConfig } from "../tools/types";
 import type { ServerContext, TransportType } from "../types";
 
@@ -74,6 +75,39 @@ export function isApiServerError(error: unknown): error is ApiServerError {
  */
 export function isAPICallError(error: unknown): error is APICallError {
   return APICallError.isInstance(error);
+}
+
+/** A scope that lets a tool change something, as opposed to reading. */
+function isWriteScope(scope: string): boolean {
+  return scope.endsWith(":write") || scope.endsWith(":admin");
+}
+
+/**
+ * Say which Sentry scopes a refused WRITE needed.
+ *
+ * Sentry answers a forbidden write with a bare 403 that names no scope, so an
+ * agent whose `update_issue` was refused is left guessing whether the issue,
+ * the project or the credential is at fault. The tool knows what it needs, so
+ * the boundary that knows the tool attaches it to the error. Reads are left
+ * alone: a 403 on a read is nearly always "you cannot see that project", which
+ * a wider token would not fix and a scope hint would misdirect. The error is
+ * searched through `cause` like the 401 check, because a tool may rewrap it.
+ */
+export function annotateMissingScopes(
+  error: unknown,
+  requiredScopes: readonly string[] | undefined,
+): void {
+  const needed = (requiredScopes ?? []).filter(isWriteScope);
+  if (needed.length === 0) return;
+  let current: unknown = error;
+  for (let i = 0; i < 3; i++) {
+    if (current instanceof ApiPermissionError) {
+      current.requiredScopes ??= needed;
+      return;
+    }
+    if (!(current instanceof Error)) return;
+    current = current.cause;
+  }
 }
 
 const GENERIC_CONFIG_ERROR_MESSAGE = [
@@ -274,6 +308,19 @@ export async function formatErrorForUser(
     return [
       "**Authorization Expired**",
       "Sentry rejected the stored access token for this session. Please re-authorize to continue.",
+    ].join("\n\n");
+  }
+
+  // A refused write that named its scopes (see annotateMissingScopes). The
+  // remedy covers both ways this server is reached: a raw auth token carries
+  // scopes, while an OAuth sign-in carries skills chosen on the consent screen.
+  if (error instanceof ApiPermissionError && error.requiredScopes?.length) {
+    return [
+      "**Permission Missing**",
+      "Sentry refused this change. The credential behind this session is not allowed to make it.",
+      `This action needs the Sentry scope${error.requiredScopes.length === 1 ? "" : "s"}: ${error.requiredScopes.join(", ")}.`,
+      "If you connected with an auth token, create one that includes that scope (Sentry → Settings → Auth Tokens) and reconnect with it. If you signed in through OAuth, sign in again and grant the skill that includes this action (Triage Issues for issues, Manage Projects & Teams for projects).",
+      `Sentry said: ${error.toUserMessage()}`,
     ].join("\n\n");
   }
 

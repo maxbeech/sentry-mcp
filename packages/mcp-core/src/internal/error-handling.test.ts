@@ -1,15 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { APICallError, RetryError } from "ai";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiPermissionError } from "../api-client";
 import {
+  AgentExecutionError,
+  ConfigurationError,
+  LLMProviderError,
+  UserInputError,
+} from "../errors";
+import {
+  annotateMissingScopes,
   formatErrorForUser,
   isExpectedToolError,
 } from "./error-handling";
-import {
-  AgentExecutionError,
-  UserInputError,
-  ConfigurationError,
-  LLMProviderError,
-} from "../errors";
-import { APICallError, RetryError } from "ai";
 
 vi.mock("../telem/logging", () => ({
   logIssue: vi.fn(() => "mock-event-id"),
@@ -85,7 +87,9 @@ describe("formatErrorForUser", () => {
 
     it("returns detailed message for stdio transport", async () => {
       const result = await formatErrorForUser(error, { transport: "stdio" });
-      expect(result).toContain("Workspace monthly budget of $15000.00 exceeded");
+      expect(result).toContain(
+        "Workspace monthly budget of $15000.00 exceeded",
+      );
       expect(result).toContain("**AI Provider Error**");
       expect(result).toContain("Other non-AI tools should still work");
       expect(result).not.toContain("Feature Unavailable");
@@ -101,7 +105,9 @@ describe("formatErrorForUser", () => {
     it("returns graceful availability message for http transport without creating an issue", async () => {
       const result = await formatErrorForUser(error, { transport: "http" });
       expect(result).toContain("**Feature Unavailable**");
-      expect(result).toContain("AI-powered features are temporarily unavailable");
+      expect(result).toContain(
+        "AI-powered features are temporarily unavailable",
+      );
       expect(result).toContain("do not require AI should still work");
       expect(result).not.toContain(
         "Workspace monthly budget of $15000.00 exceeded",
@@ -118,7 +124,9 @@ describe("formatErrorForUser", () => {
 
     it("returns detailed message when transport is undefined", async () => {
       const result = await formatErrorForUser(error);
-      expect(result).toContain("Workspace monthly budget of $15000.00 exceeded");
+      expect(result).toContain(
+        "Workspace monthly budget of $15000.00 exceeded",
+      );
       expect(logIssue).not.toHaveBeenCalled();
       expect(logWarn).toHaveBeenCalled();
     });
@@ -145,7 +153,9 @@ describe("formatErrorForUser", () => {
     it("returns graceful availability message for http transport without creating an issue", async () => {
       const result = await formatErrorForUser(error, { transport: "http" });
       expect(result).toContain("**Feature Unavailable**");
-      expect(result).toContain("AI-powered features are temporarily unavailable");
+      expect(result).toContain(
+        "AI-powered features are temporarily unavailable",
+      );
       expect(result).not.toContain("Invalid API key provided");
       expect(logIssue).not.toHaveBeenCalled();
       expect(logWarn).toHaveBeenCalled();
@@ -170,7 +180,9 @@ describe("formatErrorForUser", () => {
 
     it("returns graceful availability message without creating an issue", async () => {
       const result = await formatErrorForUser(error, { transport: "http" });
-      expect(result).toContain("AI-powered features are temporarily unavailable");
+      expect(result).toContain(
+        "AI-powered features are temporarily unavailable",
+      );
       expect(result).not.toContain("Internal server error");
       expect(logIssue).not.toHaveBeenCalled();
       expect(logWarn).toHaveBeenCalled();
@@ -206,7 +218,9 @@ describe("formatErrorForUser", () => {
 
     it("returns graceful availability message without creating an issue", async () => {
       const result = await formatErrorForUser(error, { transport: "http" });
-      expect(result).toContain("AI-powered features are temporarily unavailable");
+      expect(result).toContain(
+        "AI-powered features are temporarily unavailable",
+      );
       expect(logIssue).not.toHaveBeenCalled();
       expect(logWarn).toHaveBeenCalled();
     });
@@ -245,5 +259,59 @@ describe("formatErrorForUser", () => {
       expect(logIssue).not.toHaveBeenCalled();
       expect(logWarn).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("annotateMissingScopes", () => {
+  it("records the write scopes a refused tool needed", () => {
+    const error = new ApiPermissionError("forbidden");
+    annotateMissingScopes(error, ["event:write"]);
+    expect(error.requiredScopes).toEqual(["event:write"]);
+  });
+
+  it("ignores read scopes, because a forbidden read is not cured by a wider token", () => {
+    const error = new ApiPermissionError("forbidden");
+    annotateMissingScopes(error, ["org:read", "event:read"]);
+    expect(error.requiredScopes).toBeUndefined();
+  });
+
+  it("finds the permission error when a tool rewrapped it", () => {
+    const inner = new ApiPermissionError("forbidden");
+    const outer = new Error("could not update", { cause: inner });
+    annotateMissingScopes(outer, ["project:write"]);
+    expect(inner.requiredScopes).toEqual(["project:write"]);
+  });
+
+  it("keeps the first answer, so a wrapper with no scopes cannot erase the tool's", () => {
+    const error = new ApiPermissionError("forbidden");
+    annotateMissingScopes(error, ["event:write"]);
+    annotateMissingScopes(error, []);
+    annotateMissingScopes(error, ["team:write"]);
+    expect(error.requiredScopes).toEqual(["event:write"]);
+  });
+
+  it("leaves other errors alone", () => {
+    expect(() =>
+      annotateMissingScopes(new Error("boom"), ["event:write"]),
+    ).not.toThrow();
+    expect(() => annotateMissingScopes("nope", ["event:write"])).not.toThrow();
+  });
+
+  it("formats a refused write with the scope, the remedy and what Sentry said", async () => {
+    const error = new ApiPermissionError(
+      "You do not have permission to perform this action.",
+    );
+    annotateMissingScopes(error, ["event:write"]);
+    const text = await formatErrorForUser(error);
+    expect(text).toContain("**Permission Missing**");
+    expect(text).toContain("event:write");
+    expect(text).toContain("Auth Tokens");
+    expect(text).toContain("You do not have permission");
+  });
+
+  it("formats an unannotated 403 as before", async () => {
+    const text = await formatErrorForUser(new ApiPermissionError("forbidden"));
+    expect(text).not.toContain("Permission Missing");
+    expect(text).toContain("Input Error");
   });
 });

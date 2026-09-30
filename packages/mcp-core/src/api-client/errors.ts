@@ -124,6 +124,14 @@ export class ApiClientError extends ApiError {
  * Includes special handling for multi-project access errors.
  */
 export class ApiPermissionError extends ApiClientError {
+  /**
+   * The Sentry scopes the refused tool needs, set at the tool boundary (see
+   * `annotateMissingScopes`) and only for a tool that changes something. The
+   * API client cannot know it: a 403 names no scope, and the same 403 also
+   * means "you cannot see that project", which a scope would not fix.
+   */
+  requiredScopes?: string[];
+
   constructor(message: string, detail?: string, responseBody?: unknown) {
     super(message, 403, detail, responseBody);
     this.name = "ApiPermissionError";
